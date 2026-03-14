@@ -34,7 +34,7 @@ jobs:
           from transformers import AutoModelForCausalLM, AutoTokenizer
           from optimum.onnxruntime import ORTModelForCausalLM
 
-          model_name = "Qwen3-42B-A3B-2507-Thinking-Abliterated-uncensored-TOTAL-RECALL-v2-Medium-MASTER-CODER-i1-GGUF"
+          model_name = "mradermacher/Qwen3-42B-A3B-2507-Thinking-Abliterated-uncensored-TOTAL-RECALL-v2-Medium-MASTER-CODER-i1-GGUF"
           output_dir = "./onnx_model"
 
           print(f"Loading model {model_name}...")
