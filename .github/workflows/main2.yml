@@ -25,22 +25,23 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install transformers optimum optimum[onnxruntime] accelerate
+          pip install transformers optimum optimum[onnxruntime] accelerate qwen3_model
 
       # Step 4: Export model to ONNX
       - name: Export Qwen3 Model to ONNX
         run: |
           python - <<EOF
-          from transformers import AutoModelForCausalLM, AutoTokenizer
+          from transformers import AutoTokenizer
+          from qwen3_model import QwenForCausalLM  # import from the Qwen3 package or repo
           from optimum.onnxruntime import ORTModelForCausalLM
 
           model_name = "mradermacher/Qwen3-42B-A3B-2507-Thinking-Abliterated-uncensored-TOTAL-RECALL-v2-Medium-MASTER-CODER-i1-GGUF"
           output_dir = "./onnx_model"
 
           print(f"Loading model {model_name}...")
-          model = AutoModelForCausalLM.from_pretrained(model_name)
+          model = QwenForCausalLM.from_pretrained(model_name)
           tokenizer = AutoTokenizer.from_pretrained(model_name)
-
+ 
           print("Exporting to ONNX...")
           ort_model = ORTModelForCausalLM.from_transformers(model)
           ort_model.save_pretrained(output_dir)
