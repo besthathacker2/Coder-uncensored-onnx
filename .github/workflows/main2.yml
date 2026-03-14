@@ -10,7 +10,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         submodules: true  # fetch llama.cpp if it's a submodule
 
@@ -25,7 +25,7 @@ jobs:
       run: |
         mkdir -p models
         # Example: Replace with actual GGUF model URL
-        wget -O models/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf "https://huggingface.co/your-user/Qwen2.5-Coder-7B-Instruct-Uncensored/resolve/main/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf"
+        wget -O models/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf "https://huggingface.co/BlossomsAI/Qwen2.5-Coder-7B-Instruct-Uncensored-GGUF/resolve/main/q4_k_s.gguf"
 
     - name: Build llama.cpp WASM
       run: |
