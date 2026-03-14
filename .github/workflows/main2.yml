@@ -1,57 +1,87 @@
-name: Export Transformers Model to ONNX
+name: Build & Deploy Qwen2.5 WASM Chatbot
 
 on:
-  workflow_dispatch:  # Allows manual triggering
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
-  export-onnx:
+  build-deploy:
     runs-on: ubuntu-latest
+
     steps:
-      # Step 1: Checkout repository
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        submodules: true  # fetch llama.cpp if it's a submodule
 
-      # Step 2: Set up Python
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
+    - name: Setup Emscripten
+      uses: emscripten/emsdk-action@v3
 
-      # Step 3: Install dependencies
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install transformers optimum optimum[onnxruntime] accelerate qwen3_model
+    - name: Clone llama.cpp
+      run: |
+        git clone --depth=1 https://github.com/ggerganov/llama.cpp.git llama.cpp
 
-      # Step 4: Export model to ONNX
-      - name: Export Qwen3 Model to ONNX
-        run: |
-          python - <<EOF
-          from transformers import AutoTokenizer
-          from qwen3_model import QwenForCausalLM  # import from the Qwen3 package or repo
-          from optimum.onnxruntime import ORTModelForCausalLM
+    - name: Clone model repo
+      run: |
+        mkdir -p models
+        # Example: Replace with actual GGUF model URL
+        wget -O models/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf "https://huggingface.co/your-user/Qwen2.5-Coder-7B-Instruct-Uncensored/resolve/main/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf"
 
-          model_name = "mradermacher/Qwen3-42B-A3B-2507-Thinking-Abliterated-uncensored-TOTAL-RECALL-v2-Medium-MASTER-CODER-i1-GGUF"
-          output_dir = "./onnx_model"
+    - name: Build llama.cpp WASM
+      run: |
+        cd llama.cpp
+        mkdir -p build-wasm
+        cd build-wasm
+        emcmake cmake ..
+        emmake make
+        # Copy wasm artifacts to deployment folder
+        mkdir -p ../deploy/wasm
+        cp main.wasm ../deploy/wasm/
+        cp main.js ../deploy/wasm/
 
-          print(f"Loading model {model_name}...")
-          model = QwenForCausalLM.from_pretrained(model_name)
-          tokenizer = AutoTokenizer.from_pretrained(model_name)
- 
-          print("Exporting to ONNX...")
-          ort_model = ORTModelForCausalLM.from_transformers(model)
-          ort_model.save_pretrained(output_dir)
-          tokenizer.save_pretrained(output_dir)
-          print(f"ONNX model saved to {output_dir}")
-          EOF
+    - name: Prepare deployment folder
+      run: |
+        mkdir -p deploy/models
+        cp models/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf deploy/models/
+        # Create index.html dynamically
+        cat > deploy/index.html << 'EOF'
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+        <meta charset="UTF-8">
+        <title>Qwen2.5-Coder WASM Chatbot</title>
+        <style>
+        body { font-family: sans-serif; padding: 2em; }
+        textarea { width: 100%; }
+        pre { background: #f0f0f0; padding: 1em; white-space: pre-wrap; }
+        </style>
+        </head>
+        <body>
+        <h1>Qwen2.5-Coder-7B WASM Chatbot</h1>
+        <textarea id="prompt" placeholder="Ask a coding question..." rows="4"></textarea>
+        <button onclick="generate()">Send</button>
+        <pre id="response"></pre>
 
-      # Step 5: Optionally, upload ONNX model as artifact
-      - name: Upload ONNX model
-        uses: actions/upload-artifact@v4
-        with:
-          name: onnx-model
-          path: ./onnx_model
+        <script src="wasm/main.js"></script>
+        <script>
+        let model;
+        async function loadModel() {
+            model = await Llama.loadModel('models/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf');
+        }
+        async function generate() {
+            const prompt = document.getElementById('prompt').value;
+            document.getElementById('response').innerText = "Generating...";
+            const output = await model.generate(prompt);
+            document.getElementById('response').innerText = output;
+        }
+        loadModel();
+        </script>
+        </body>
+        </html>
+        EOF
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v6
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./deploy
