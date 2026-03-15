@@ -15,7 +15,9 @@ jobs:
         submodules: true  # fetch llama.cpp if it's a submodule
 
     - name: Setup Emscripten
-      uses: emscripten/emsdk-action@v3
+      uses: emscripten-core/emsdk-action@v1
+      with:
+        version: 3.1.39  # or the version you need
 
     - name: Clone llama.cpp
       run: |
@@ -81,7 +83,7 @@ jobs:
         EOF
 
     - name: Deploy to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v6
+      uses: peaceiris/actions-gh-pages@v5
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./deploy
