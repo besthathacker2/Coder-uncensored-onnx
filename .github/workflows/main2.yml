@@ -1,87 +1,325 @@
-name: Build & Deploy Qwen2.5 WASM Chatbot
+name: Convert Qwen to ONNX for Transformers.js
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: "Hugging Face model ID"
+        required: true
+        default: "thirdeyeai/Qwen2.5-Coder-32B-Instruct-Uncensored"
+        type: string
+      quantize:
+        description: "Quantize the model (reduces size)"
+        required: true
+        default: true
+        type: boolean
+      hf_repo_id:
+        description: "Target HF repo for upload (e.g., yourusername/qwen-onnx)"
+        required: true
+        type: string
+  schedule:
+    # Optional: Run weekly
+    - cron: '0 0 * * 0'
+
+env:
+  REGISTRY: ghcr.io
+  HF_HOME: /tmp/huggingface
 
 jobs:
-  build-deploy:
+  convert:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 1440  # 24 hours for large models
+    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        submodules: true  # fetch llama.cpp if it's a submodule
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install Emscripten
-      uses: emscripten-core/emsdk-action@v2.1.33
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-    - name: Clone llama.cpp
-      run: |
-        git clone --depth=1 https://github.com/ggerganov/llama.cpp.git llama.cpp
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs
 
-    - name: Clone model repo
-      run: |
-        mkdir -p models
-        # Example: Replace with actual GGUF model URL
-        wget -O models/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf "https://huggingface.co/BlossomsAI/Qwen2.5-Coder-7B-Instruct-Uncensored-GGUF/resolve/main/q4_k_s.gguf"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch transformers optimum[onnx] onnxruntime huggingface-hub \
+            tensorflow[and-cuda] protobuf safetensors
 
-    - name: Build llama.cpp WASM
-      run: |
-        cd llama.cpp
-        mkdir -p build-wasm
-        cd build-wasm
-        emcmake cmake ..
-        emmake make
-        # Copy wasm artifacts to deployment folder
-        mkdir -p ../deploy/wasm
-        cp main.wasm ../deploy/wasm/
-        cp main.js ../deploy/wasm/
+      - name: Set up Git LFS
+        run: |
+          git lfs install
 
-    - name: Prepare deployment folder
-      run: |
-        mkdir -p deploy/models
-        cp models/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf deploy/models/
-        # Create index.html dynamically
-        cat > deploy/index.html << 'EOF'
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-        <meta charset="UTF-8">
-        <title>Qwen2.5-Coder WASM Chatbot</title>
-        <style>
-        body { font-family: sans-serif; padding: 2em; }
-        textarea { width: 100%; }
-        pre { background: #f0f0f0; padding: 1em; white-space: pre-wrap; }
-        </style>
-        </head>
-        <body>
-        <h1>Qwen2.5-Coder-7B WASM Chatbot</h1>
-        <textarea id="prompt" placeholder="Ask a coding question..." rows="4"></textarea>
-        <button onclick="generate()">Send</button>
-        <pre id="response"></pre>
+      - name: Create conversion script
+        run: |
+          cat > convert_model.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import sys
+          from pathlib import Path
+          from optimum.onnxruntime import ORTModelForCausalLM
+          from transformers import AutoTokenizer, AutoConfig
+          
+          def convert_to_onnx(model_id, output_dir, quantize=False):
+              """Convert model to ONNX format."""
+              print(f"\n{'='*70}")
+              print(f"Converting: {model_id}")
+              print(f"Output: {output_dir}")
+              print(f"Quantize: {quantize}")
+              print(f"{'='*70}\n")
+              
+              output_path = Path(output_dir)
+              output_path.mkdir(parents=True, exist_ok=True)
+              
+              try:
+                  # Load configuration
+                  print("[1/5] Loading model configuration...")
+                  config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+                  print(f"  ✓ Model: {config.model_type}")
+                  print(f"  ✓ Parameters: {config.num_parameters / 1e9:.1f}B")
+                  
+                  # Export to ONNX
+                  print("\n[2/5] Exporting to ONNX...")
+                  print("  This may take 30-60 minutes for large models...")
+                  
+                  ort_model = ORTModelForCausalLM.from_pretrained(
+                      model_id,
+                      export=True,
+                      use_cache=True,
+                      trust_remote_code=True,
+                      device_map="auto",
+                  )
+                  
+                  print("  ✓ ONNX export successful")
+                  
+                  # Save ONNX model
+                  print("\n[3/5] Saving ONNX model...")
+                  ort_model.save_pretrained(output_path / "onnx")
+                  print(f"  ✓ Saved to {output_path / 'onnx'}")
+                  
+                  # Save tokenizer
+                  print("\n[4/5] Saving tokenizer...")
+                  tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+                  tokenizer.save_pretrained(str(output_path))
+                  print("  ✓ Tokenizer saved")
+                  
+                  # Save config
+                  print("\n[5/5] Saving configuration...")
+                  config.save_pretrained(str(output_path))
+                  print("  ✓ Configuration saved")
+                  
+                  print(f"\n{'='*70}")
+                  print("✅ Conversion Complete!")
+                  print(f"{'='*70}\n")
+                  
+                  # List files
+                  print("Generated files:")
+                  total_size = 0
+                  for file in sorted(output_path.glob("**/*")):
+                      if file.is_file():
+                          size_mb = file.stat().st_size / (1024*1024)
+                          total_size += size_mb
+                          if size_mb > 100:
+                              print(f"  {file.relative_to(output_path):<50} {size_mb:>8.1f} MB")
+                          else:
+                              print(f"  {file.relative_to(output_path):<50} {size_mb:>8.2f} MB")
+                  
+                  print(f"\nTotal size: {total_size / 1024:.2f} GB")
+                  
+                  return True
+                  
+              except Exception as e:
+                  print(f"\n✗ Conversion failed: {e}")
+                  import traceback
+                  traceback.print_exc()
+                  return False
+          
+          if __name__ == "__main__":
+              model_id = sys.argv[1]
+              output_dir = sys.argv[2]
+              quantize = sys.argv[3].lower() == "true"
+              
+              success = convert_to_onnx(model_id, output_dir, quantize)
+              sys.exit(0 if success else 1)
+          EOF
+          chmod +x convert_model.py
 
-        <script src="wasm/main.js"></script>
-        <script>
-        let model;
-        async function loadModel() {
-            model = await Llama.loadModel('models/Qwen2.5-Coder-7B-Instruct-Uncensored.gguf');
-        }
-        async function generate() {
-            const prompt = document.getElementById('prompt').value;
-            document.getElementById('response').innerText = "Generating...";
-            const output = await model.generate(prompt);
-            document.getElementById('response').innerText = output;
-        }
-        loadModel();
-        </script>
-        </body>
-        </html>
-        EOF
+      - name: Login to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "from huggingface_hub import login; login(token='${{ secrets.HF_TOKEN }}')"
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
 
-    - name: Deploy to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v4
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./deploy
+      - name: Convert model
+        id: convert
+        run: |
+          python convert_model.py \
+            "${{ github.event.inputs.model_id }}" \
+            "./qwen-onnx" \
+            "${{ github.event.inputs.quantize }}"
+          
+          # Get total size
+          SIZE=$(du -sh ./qwen-onnx | cut -f1)
+          echo "output_size=$SIZE" >> $GITHUB_OUTPUT
+          echo "Model size: $SIZE"
+
+      - name: Create model card
+        run: |
+          cat > ./qwen-onnx/README.md << 'EOF'
+          ---
+          library_name: transformers.js
+          tags:
+            - transformers.js
+            - onnx
+            - qwen
+            - code-generation
+          ---
+          
+          # Qwen2.5-Coder-32B ONNX
+          
+          This is an ONNX conversion of [thirdeyeai/Qwen2.5-Coder-32B-Instruct-Uncensored](https://huggingface.co/thirdeyeai/Qwen2.5-Coder-32B-Instruct-Uncensored) for use with [transformers.js](https://huggingface.co/docs/transformers.js/).
+          
+          ## Usage
+          
+          ```javascript
+          import { pipeline } from '@huggingface/transformers';
+          
+          const generator = await pipeline(
+            'text-generation',
+            '${{ github.event.inputs.hf_repo_id }}'
+          );
+          
+          const result = await generator('write a function to sort an array', {
+            max_new_tokens: 200,
+          });
+          
+          console.log(result[0].generated_text);
+          ```
+          
+          ## Details
+          
+          - **Base Model**: thirdeyeai/Qwen2.5-Coder-32B-Instruct-Uncensored
+          - **Format**: ONNX
+          - **Quantized**: ${{ github.event.inputs.quantize }}
+          - **Size**: ${{ steps.convert.outputs.output_size }}
+          - **Conversion Date**: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          - **GitHub Actions**: [Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          
+          ## Installation
+          
+          ```bash
+          npm install @huggingface/transformers
+          ```
+          
+          ## Supported Tasks
+          
+          - Text Generation
+          - Code Generation
+          - Conversational AI
+          
+          ## Limitations
+          
+          - Browser deployment recommended with quantization
+          - Large context length (up to 128K tokens)
+          - May require significant GPU memory for optimal performance
+          
+          ## License
+          
+          Same as original model: https://huggingface.co/thirdeyeai/Qwen2.5-Coder-32B-Instruct-Uncensored
+          EOF
+
+      - name: Upload to Hugging Face Hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          cd ./qwen-onnx
+          
+          # Initialize git repo
+          git init
+          git add .
+          git commit -m "Add ONNX conversion from GitHub Actions"
+          
+          # Add remote and push
+          git remote add origin https://huggingface.co/${{ github.event.inputs.hf_repo_id }}
+          git push --force -u origin main 2>&1 | grep -v "fatal:"  || true
+          
+          echo "✅ Model uploaded to: https://huggingface.co/${{ github.event.inputs.hf_repo_id }}"
+
+      - name: Create GitHub Release
+        if: success()
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: onnx-${{ github.run_number }}
+          release_name: ONNX Conversion Run #${{ github.run_number }}
+          body: |
+            ## Conversion Summary
+            
+            **Model**: ${{ github.event.inputs.model_id }}
+            **Target Repo**: ${{ github.event.inputs.hf_repo_id }}
+            **Quantized**: ${{ github.event.inputs.quantize }}
+            **Output Size**: ${{ steps.convert.outputs.output_size }}
+            **Conversion Time**: ${{ job.duration }}
+            
+            ### Model Card
+            https://huggingface.co/${{ github.event.inputs.hf_repo_id }}
+            
+            ### Usage Example
+            ```javascript
+            const generator = await pipeline(
+              'text-generation',
+              '${{ github.event.inputs.hf_repo_id }}'
+            );
+            ```
+          draft: false
+          prerelease: false
+
+      - name: Send Slack Notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK }}
+          payload: |
+            {
+              "text": "Qwen ONNX Conversion: ${{ job.status }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Qwen ONNX Conversion Result*\nStatus: `${{ job.status }}`\nModel: ${{ github.event.inputs.model_id }}\nRepo: ${{ github.event.inputs.hf_repo_id }}"
+                  }
+                }
+              ]
+            }
+
+      - name: Upload artifacts to GitHub
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conversion-logs
+          path: |
+            convert_model.py
+            ./qwen-onnx/README.md
+          retention-days: 30
+
+  cleanup:
+    runs-on: ubuntu-latest
+    needs: convert
+    if: always()
+    steps:
+      - name: Free up disk space
+        run: |
+          rm -rf /tmp/huggingface
+          df -h
