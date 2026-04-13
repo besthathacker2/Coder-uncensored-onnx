@@ -74,7 +74,7 @@ jobs:
                   print("[1/5] Loading model configuration...")
                   config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
                   print(f"  ✓ Model: {config.model_type}")
-                  print(f"  ✓ Parameters: {config.num_parameters / 1e9:.1f}B")
+                  print(f"  ✓ Parameters: B")
                   
                   # Export to ONNX
                   print("\n[2/5] Exporting to ONNX...")
