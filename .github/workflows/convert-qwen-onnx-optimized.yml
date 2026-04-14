@@ -112,13 +112,13 @@ jobs:
           
           # Install in stages with progress
           echo "Installing core dependencies..."
-          pip install --no-cache-dir --quiet torch==2.1.2
+          pip install --no-cache-dir --quiet torch
           
           echo "Installing transformers..."
-          pip install --no-cache-dir --quiet transformers==4.36.2
+          pip install --no-cache-dir --quiet transformers
           
           echo "Installing optimum..."
-          pip install --no-cache-dir --quiet optimum==1.17.1
+          pip install --no-cache-dir --quiet optimum
           
           echo "Installing ONNX runtime..."
           pip install --no-cache-dir --quiet onnxruntime
