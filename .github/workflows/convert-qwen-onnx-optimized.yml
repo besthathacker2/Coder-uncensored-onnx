@@ -68,11 +68,7 @@ jobs:
           echo "Monitor PID: $!"
 
       - name: Set up Python (lightweight)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'  # Lighter than 3.11
-          cache: 'pip'
-        timeout-minutes: 10
+        run: apt-get install python3
 
       # ============================================================
       # CRITICAL: Prevent memory overload
