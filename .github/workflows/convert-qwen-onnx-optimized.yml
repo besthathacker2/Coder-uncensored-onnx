@@ -68,7 +68,7 @@ jobs:
           echo "Monitor PID: $!"
 
       - name: Set up Python (lightweight)
-        run: apt-get install python3
+        run: sudo apt-get install python3
 
       # ============================================================
       # CRITICAL: Prevent memory overload
