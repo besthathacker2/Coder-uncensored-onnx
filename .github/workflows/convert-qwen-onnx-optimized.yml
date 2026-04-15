@@ -52,7 +52,7 @@ jobs:
           pip install --no-cache-dir optimum
           
           echo "Installing ONNX runtime..."
-          pip install --no-cache-dir onnxruntime
+          pip install --no-cache-dir optimum[onnxruntime]
           
           echo "Installing HF tools..."
           pip install --no-cache-dir huggingface-hub
