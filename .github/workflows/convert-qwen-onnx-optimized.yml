@@ -1,4 +1,4 @@
-name: Convert Qwen to ONNX (Optimized for Large Models)
+name: Convert Qwen to ONNX (CUDA Fix)
 
 on:
   workflow_dispatch:
@@ -6,117 +6,48 @@ on:
       model_id:
         description: "Hugging Face model ID"
         required: true
-        default: "thirdeyeai/Qwen2.5-Coder-32B-Instruct-Uncensored"
+        default: "Qwen/Qwen2.5-Coder-7B-Instruct"
         type: string
       quantize:
-        description: "Quantize model (reduces size)"
+        description: "Quantize model"
         required: true
         default: true
         type: boolean
       hf_repo_id:
-        description: "Target HF repo (yourusername/qwen-onnx)"
+        description: "Target HF repo"
         required: true
         type: string
-      use_smaller_model:
-        description: "Use 7B variant instead of 32B?"
-        required: false
-        default: false
-        type: boolean
-
-# Increase runner timeout to maximum
-concurrency:
-  group: qwen-conversion
-  cancel-in-progress: false
 
 env:
   HF_HOME: /tmp/huggingface
-  # Memory and CPU optimization
-  PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb=512"
-  TORCH_NUM_THREADS: 2
-  OMP_NUM_THREADS: 2
-  PYTHONUNBUFFERED: 1
+  # CRITICAL: Disable CUDA to avoid AllocatorConfig error
+  CUDA_VISIBLE_DEVICES: ""
+  # Use CPU-only PyTorch
+  FORCE_CPU: "1"
 
 jobs:
   convert:
     runs-on: ubuntu-latest
-    timeout-minutes: 1440  # 24 hours max
-    
+    timeout-minutes: 1440
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         timeout-minutes: 5
 
-      # ============================================================
-      # CRITICAL: System monitoring setup
-      # ============================================================
-      - name: Start background monitoring
-        run: |
-          # Monitor system health every 30 seconds
-          cat > /tmp/monitor.sh << 'EOF'
-          #!/bin/bash
-          while true; do
-            echo "=== System Health Check ==="
-            free -h | head -2
-            df -h / | tail -1
-            ps aux | grep -E "python|onnx" | grep -v grep | head -3
-            echo "=========================="
-            sleep 30
-          done
-          EOF
-          chmod +x /tmp/monitor.sh
-          nohup /tmp/monitor.sh > /tmp/monitor.log 2>&1 &
-          echo "Monitor PID: $!"
-
-      - name: Set up Python (lightweight)
+      - name: Set up Python
         run: sudo apt-get install python3
-
-      # ============================================================
-      # CRITICAL: Prevent memory overload
-      # ============================================================
-      - name: Configure memory limits
-        run: |
-          # Set memory limit to prevent OOM
-          echo "Setting up memory constraints..."
-          
-          # Check available memory
-          TOTAL_MEM=$(free -b | awk '/^Mem:/{print $2}')
-          LIMIT=$((TOTAL_MEM * 80 / 100))  # Use max 80% of RAM
-          echo "Total Memory: $((TOTAL_MEM / 1024 / 1024 / 1024)) GB"
-          echo "Memory Limit: $((LIMIT / 1024 / 1024 / 1024)) GB"
-          
-          # Disable swap to prevent slowdown
-          echo "Disabling memory overcommit..."
-          
-          # Kill unnecessary processes
-          sudo killall -9 apt-get 2>/dev/null || true
-          sudo killall -9 unattended-upgrade 2>/dev/null || true
-
-      - name: Install system dependencies (minimal)
-        run: |
-          # Minimal dependency installation
-          sudo apt-get update --quiet
-          sudo apt-get install -y --no-install-recommends \
-            git-lfs \
-            build-essential \
-            2>&1 | tail -5
-          
-          git lfs install
-        timeout-minutes: 15
-
-      # ============================================================
-      # CRITICAL: Minimal pip installation
-      # ============================================================
-      - name: Install Python dependencies (streaming)
+        
+      - name: Install dependencies (CPU-only)
         run: |
           python -m pip install --upgrade pip --quiet
           
-          # Install in stages with progress
-          echo "Installing core dependencies..."
-          pip install --no-cache-dir --quiet torch
+          # Install CPU-only PyTorch (avoids CUDA issues)
+          echo "Installing CPU-only PyTorch..."
+          pip install --no-cache-dir --quiet torch --index-url https://download.pytorch.org/whl/cpu
           
           echo "Installing transformers..."
           pip install --no-cache-dir --quiet transformers
-          
           echo "Installing optimum..."
           pip install --no-cache-dir --quiet optimum
           
@@ -129,68 +60,45 @@ jobs:
           echo "✓ Dependencies installed"
         timeout-minutes: 20
 
-      # ============================================================
-      # Model conversion with keepalive
-      # ============================================================
-      - name: Create conversion script with monitoring
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update --quiet
+          sudo apt-get install -y --no-install-recommends git-lfs
+          git lfs install
+        timeout-minutes: 15
+
+      - name: Create conversion script (CPU-safe)
         run: |
           cat > convert_model.py << 'EOFPYTHON'
           #!/usr/bin/env python3
           """
-          Optimized model converter with network keepalive
+          CPU-safe model converter
           """
           import os
           import sys
-          import time
-          import subprocess
+          import torch
+          
+          # Force CPU before any torch operations
+          os.environ['CUDA_VISIBLE_DEVICES'] = ''
+          os.environ['FORCE_CPU'] = '1'
+          torch.cuda.is_available = lambda: False
+          
           from pathlib import Path
-          from threading import Thread
-          import requests
+          from transformers import AutoConfig, AutoTokenizer
+          from optimum.onnxruntime import ORTModelForCausalLM
           
-          # Keep runner alive during conversion
-          class KeepaliveThread(Thread):
-              """Send periodic requests to keep runner active"""
-              def __init__(self, interval=60):
-                  super().__init__(daemon=True)
-                  self.interval = interval
-                  self.running = True
-              
-              def run(self):
-                  while self.running:
-                      time.sleep(self.interval)
-                      try:
-                          print(".", end="", flush=True)  # Stdout keepalive
-                          # Flush memory stats
-                          os.system("free -h 2>/dev/null | tail -1 | sed 's/^/[Memory] /'")
-                      except:
-                          pass
-              
-              def stop(self):
-                  self.running = False
-          
-          def convert_to_onnx(model_id, output_dir, quantize=False):
-              """Convert model to ONNX with memory optimization"""
+          def convert_to_onnx(model_id, output_dir):
+              """Convert model to ONNX on CPU"""
               print(f"\n{'='*70}")
               print(f"Converting: {model_id}")
+              print(f"Device: CPU (CUDA disabled)")
               print(f"Output: {output_dir}")
-              print(f"Quantize: {quantize}")
               print(f"{'='*70}\n")
-              
-              # Start keepalive thread
-              keepalive = KeepaliveThread(interval=30)
-              keepalive.start()
               
               output_path = Path(output_dir)
               output_path.mkdir(parents=True, exist_ok=True)
               
               try:
-                  # Set memory optimization
-                  os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb=512'
-                  os.environ['TORCH_NUM_THREADS'] = '2'
-                  
-                  from transformers import AutoConfig, AutoTokenizer
-                  from optimum.onnxruntime import ORTModelForCausalLM
-                  
                   # Step 1: Load configuration
                   print("[1/4] Loading model configuration...")
                   config = AutoConfig.from_pretrained(
@@ -199,20 +107,20 @@ jobs:
                   )
                   print(f"  ✓ {config.model_type}")
                   print(f"  ✓ Parameters: {config.num_parameters / 1e9:.1f}B")
-                  print(f"  ✓ Memory per forward pass: ~15GB")
                   print()
                   
-                  # Step 2: Export to ONNX (longest operation)
-                  print("[2/4] Exporting to ONNX (this takes 1-2 hours)...")
-                  print("  Monitoring progress...")
+                  # Step 2: Export to ONNX
+                  print("[2/4] Exporting to ONNX...")
+                  print("  Converting on CPU (this may take 30-90 minutes)...")
                   
-                  # Use CPU to reduce memory pressure
+                  # Force CPU device
                   model = ORTModelForCausalLM.from_pretrained(
                       model_id,
                       export=True,
                       use_cache=True,
                       trust_remote_code=True,
-                      device_map="cpu",  # Force CPU to avoid GPU memory issues
+                      # Critical: Use CPU
+                      device_map="cpu",
                       low_cpu_mem_usage=True,
                       offload_folder="./offload",
                   )
@@ -248,46 +156,36 @@ jobs:
                   ) / (1024**3)
                   print(f"Total size: {total_size:.2f} GB\n")
                   
-                  keepalive.stop()
                   return True
                   
               except Exception as e:
                   print(f"\n❌ Error: {e}")
                   import traceback
                   traceback.print_exc()
-                  keepalive.stop()
                   return False
           
           if __name__ == "__main__":
               model_id = sys.argv[1] if len(sys.argv) > 1 else "${{ github.event.inputs.model_id }}"
               output_dir = sys.argv[2] if len(sys.argv) > 2 else "./model-output"
-              quantize = sys.argv[3].lower() == "true" if len(sys.argv) > 3 else ${{ github.event.inputs.quantize }}
               
-              # Support smaller model
-              if "${{ github.event.inputs.use_smaller_model }}" == "true":
-                  model_id = model_id.replace("32B", "7B")
-              
-              success = convert_to_onnx(model_id, output_dir, quantize)
+              success = convert_to_onnx(model_id, output_dir)
               sys.exit(0 if success else 1)
           EOFPYTHON
           
           chmod +x convert_model.py
 
-      - name: Convert model (with error recovery)
+      - name: Convert model
         id: convert
         run: |
-          # Trap errors and keep runner responsive
           set +e
           
-          echo "Starting conversion..."
+          echo "Starting conversion (CPU-only mode)..."
           python convert_model.py \
             "${{ github.event.inputs.model_id }}" \
-            "./model-output" \
-            "${{ github.event.inputs.quantize }}" 2>&1 | tee conversion.log
+            "./model-output" 2>&1 | tee conversion.log
           
           RESULT=$?
           
-          # Check for success
           if [ $RESULT -eq 0 ] && [ -d "./model-output/onnx" ]; then
             echo "conversion_success=true" >> $GITHUB_OUTPUT
             SIZE=$(du -sh ./model-output | cut -f1)
@@ -299,7 +197,7 @@ jobs:
             tail -50 conversion.log
             exit 1
           fi
-        timeout-minutes: 180  # 3 hours for conversion
+        timeout-minutes: 180
         continue-on-error: false
 
       - name: Create model card
@@ -312,15 +210,13 @@ jobs:
             - transformers.js
             - onnx
             - qwen
-            - code-generation
           ---
           
-          # Qwen2.5-Coder ONNX
+          # Qwen ONNX Model
           
-          This is an ONNX conversion of **${{ github.event.inputs.model_id }}** 
-          for use with [transformers.js](https://huggingface.co/docs/transformers.js/).
+          Converted from: **${{ github.event.inputs.model_id }}**
           
-          ## Quick Start
+          ## Usage
           
           ```javascript
           import { pipeline } from '@huggingface/transformers';
@@ -330,88 +226,54 @@ jobs:
             '${{ github.event.inputs.hf_repo_id }}'
           );
           
-          const result = await generator('write a function to sort an array', {
+          const result = await generator('your prompt', {
             max_new_tokens: 200,
           });
           ```
           
           ## Details
           
-          - **Base Model**: ${{ github.event.inputs.model_id }}
-          - **Format**: ONNX
-          - **Size**: ${{ steps.convert.outputs.output_size }}
-          - **Converted**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-          
-          ## Original Model
-          
-          https://huggingface.co/${{ github.event.inputs.model_id }}
+          - Model: ${{ github.event.inputs.model_id }}
+          - Format: ONNX
+          - Size: ${{ steps.convert.outputs.output_size }}
+          - Converted: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
           EOF
 
-      - name: Prepare upload with Git LFS
+      - name: Prepare upload
         if: steps.convert.outputs.conversion_success == 'true'
         run: |
           cd ./model-output
           
-          # Track large files with Git LFS
           git lfs install
           git config user.email "github-actions@github.com"
           git config user.name "GitHub Actions"
           
-          # Initialize git
           git init
           git lfs track "onnx/*.onnx"
           git lfs track "onnx/*.onnx.*"
           git add .gitattributes
           git add .
-          git commit -m "Add ONNX conversion from GitHub Actions" || echo "Nothing to commit"
+          git commit -m "Add ONNX conversion" || echo "Nothing to commit"
           
           echo "✓ Git LFS configured"
 
-      - name: Upload to Hugging Face (with retry)
+      - name: Upload to Hugging Face
         if: steps.convert.outputs.conversion_success == 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           cd ./model-output
           
-          # Try upload with exponential backoff
-          MAX_ATTEMPTS=3
-          ATTEMPT=1
+          git remote add origin https://huggingface.co/${{ github.event.inputs.hf_repo_id }} 2>/dev/null || true
           
-          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-            echo "Upload attempt $ATTEMPT of $MAX_ATTEMPTS..."
-            
-            # Force push to handle large files
-            git remote add origin https://huggingface.co/${{ github.event.inputs.hf_repo_id }} 2>/dev/null || true
-            
-            if git push --force -u origin main 2>&1 | tee push.log; then
-              echo "✅ Upload successful!"
-              echo "📍 https://huggingface.co/${{ github.event.inputs.hf_repo_id }}"
-              exit 0
-            fi
-            
-            # Check for specific errors
-            if grep -q "repository not found" push.log; then
-              echo "❌ Repository not found. Create it first at:"
-              echo "   https://huggingface.co/new"
-              exit 1
-            fi
-            
-            if grep -q "Authentication failed" push.log; then
-              echo "❌ Authentication failed. Check HF_TOKEN."
-              exit 1
-            fi
-            
-            # Wait before retry (exponential backoff)
-            WAIT=$((2 ** ATTEMPT * 10))
-            echo "Waiting ${WAIT}s before retry..."
-            sleep $WAIT
-            
-            ATTEMPT=$((ATTEMPT + 1))
-          done
-          
-          echo "❌ Upload failed after $MAX_ATTEMPTS attempts"
-          exit 1
+          echo "Uploading to Hugging Face Hub..."
+          if git push --force -u origin main 2>&1; then
+            echo "✅ Upload successful!"
+            echo "📍 https://huggingface.co/${{ github.event.inputs.hf_repo_id }}"
+          else
+            echo "Upload attempt with main branch failed, trying master..."
+            git push --force -u origin master
+          fi
         timeout-minutes: 60
         continue-on-error: true
 
@@ -419,37 +281,20 @@ jobs:
         if: always()
         run: |
           echo ""
-          echo "╔════════════════════════════════════════════╗"
           if [ "${{ steps.convert.outputs.conversion_success }}" = "true" ]; then
-            echo "║ ✅ CONVERSION SUCCESSFUL                   ║"
-            echo "╠════════════════════════════════════════════╣"
-            echo "║ Model: ${{ github.event.inputs.model_id }}"
-            echo "║ Size: ${{ steps.convert.outputs.output_size }}"
-            echo "║ Hub: ${{ github.event.inputs.hf_repo_id }}"
-            echo "╚════════════════════════════════════════════╝"
+            echo "✅ CONVERSION SUCCESSFUL"
+            echo "Model: ${{ github.event.inputs.model_id }}"
+            echo "Size: ${{ steps.convert.outputs.output_size }}"
+            echo "Hub: https://huggingface.co/${{ github.event.inputs.hf_repo_id }}"
           else
-            echo "║ ❌ CONVERSION FAILED                       ║"
-            echo "╚════════════════════════════════════════════╝"
+            echo "❌ CONVERSION FAILED"
+            echo "Error: PyTorch CUDA allocation issue (see logs)"
+            echo "Solution: Try smaller model or use local conversion"
           fi
           echo ""
 
-      - name: Cleanup and free space
+      - name: Cleanup
         if: always()
         run: |
-          echo "Cleaning up..."
-          rm -rf /tmp/huggingface ~/.cache/huggingface 2>/dev/null || true
-          rm -rf offload 2>/dev/null || true
+          rm -rf /tmp/huggingface ~/.cache/huggingface offload 2>/dev/null || true
           df -h /
-
-  # ====================================================================
-  # Separate job to handle network/disk issues gracefully
-  # ====================================================================
-  post-conversion:
-    runs-on: ubuntu-latest
-    needs: convert
-    if: always()
-    steps:
-      - name: Verify upload
-        run: |
-          echo "Checking if model is accessible..."
-          echo "Model URL: https://huggingface.co/${{ github.event.inputs.hf_repo_id }}"
