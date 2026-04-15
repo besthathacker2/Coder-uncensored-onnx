@@ -106,7 +106,7 @@ jobs:
                       trust_remote_code=True
                   )
                   print(f"  ✓ {config.model_type}")
-                  print(f"  ✓ Parameters: {config.num_parameters / 1e9:.1f}B")
+                  print(f"  ✓ Parameters: B")
                   print()
                   
                   # Step 2: Export to ONNX
