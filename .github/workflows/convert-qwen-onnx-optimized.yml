@@ -40,22 +40,22 @@ jobs:
         
       - name: Install dependencies (CPU-only)
         run: |
-          python -m pip install --upgrade pip --quiet
+          python -m pip install --upgrade pip
           
           # Install CPU-only PyTorch (avoids CUDA issues)
           echo "Installing CPU-only PyTorch..."
-          pip install --no-cache-dir --quiet torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
           
           echo "Installing transformers..."
-          pip install --no-cache-dir --quiet transformers
+          pip install --no-cache-dir transformers
           echo "Installing optimum..."
-          pip install --no-cache-dir --quiet optimum
+          pip install --no-cache-dir optimum
           
           echo "Installing ONNX runtime..."
-          pip install --no-cache-dir --quiet onnxruntime
+          pip install --no-cache-dir onnxruntime
           
           echo "Installing HF tools..."
-          pip install --no-cache-dir --quiet huggingface-hub
+          pip install --no-cache-dir huggingface-hub
           
           echo "✓ Dependencies installed"
         timeout-minutes: 20
