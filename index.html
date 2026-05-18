@@ -427,7 +427,18 @@ async function patchProject(userRequest){
 
     const patches = JSON.parse(
         data.choices[0].message.content
-    );
+    )
+    
+    if(data.error){
+
+        console.error(data.error);
+
+        alert(data.error.message);
+
+        setStatus('API Error');
+
+        return;
+    }
 
     applyPatches(patches);
 }
