@@ -184,11 +184,6 @@ input[type='password']{
 <div class="sidebar">
 
 <div class="section">
-<input type="password" id="apiKey"
-placeholder="OpenRouter API Key" />
-</div>
-
-<div class="section">
 <input
 type="file"
 id="imageUpload"
@@ -247,6 +242,7 @@ console.log('WebContainer Ready');
 </script>
 
 <script>
+const key = "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"
 let files = {
     "index.html":""
 };
@@ -433,13 +429,6 @@ async function patchProject(userRequest){
 
 
 async function generateProject(){
-
-    const key = document.getElementById("apiKey").value;
-
-    if(!key){
-        alert("Missing OpenRouter key");
-        return;
-    }
 
     const prompt = document.getElementById("prompt").value;
 
