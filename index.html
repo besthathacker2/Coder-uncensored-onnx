@@ -374,25 +374,16 @@ app.listen(3000);
     );
 }
 
-function applyPatches(patches){
+async function generateProject(){
 
-    patches.forEach(patch=>{
+    const prompt = document.getElementById("prompt").value;
 
-        files[patch.file] =
-            files[patch.file].replace(
-                patch.search,
-                patch.replace
-            );
+    addMessage("user",prompt);
 
-    });
+    setStatus("Generating...");
 
-    openFile();
-    runPreview();
-}
-
-async function patchProject(userRequest){
-
-    const response = await fetch(
+    const data = await response.json();
+        const response = await fetch(
         'https://openrouter.ai/api/v1/chat/completions',
         {
             method:'POST',
@@ -428,10 +419,12 @@ async function patchProject(userRequest){
     const patches = JSON.parse(
         data.choices[0].message.content
     )
+
+    alert(data.choices[0].message.content)
     
     if(data.error){
 
-        console.error(data.error);
+        alert(data.error);
 
         alert(data.error.message);
 
@@ -439,52 +432,9 @@ async function patchProject(userRequest){
 
         return;
     }
-
-    applyPatches(patches);
-}
-
-
-async function generateProject(){
-
-    const prompt = document.getElementById("prompt").value;
-
-    addMessage("user",prompt);
-
-    setStatus("Generating...");
-
-    const response = await fetch(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-            method:"POST",
-            headers:{
-                "Authorization":"Bearer " + key,
-                "Content-Type":"application/json"
-            },
-            body:JSON.stringify({
-                model:"qwen/qwen3-coder:free",
-                messages:[
-                    {
-                        role:"system",
-                        content:
-                           `You are a powerful coding agent.
-                            Return a COMPLETE runnable HTML app.
-                            Include CSS and JS inline.
-                            Return ONLY code.`
-                    },
-                    {
-                        role:"user",
-                        content:prompt
-                    }
-                ]
-            })
-        }
-    );
-
-    const data = await response.json();
-
     let code =
         data.choices?.[0]?.message?.content || "";
-
+    
     code = code
         .replace(/```html/g,"")
         .replace(/```/g,"");
