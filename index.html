@@ -392,26 +392,31 @@ function applyPatches(patches){
 
 async function patchProject(userRequest){
 
-    const key = document.getElementById('apiKey').value;
-
     const response = await fetch(
         'https://openrouter.ai/api/v1/chat/completions',
         {
             method:'POST',
+
             headers:{
                 'Authorization':'Bearer ' + key,
-                'Content-Type':'application/json'
+                'Content-Type':'application/json',
+                'HTTP-Referer':location.origin,
+                'X-Title':'Qwen Coding Agent'
             },
+
             body:JSON.stringify({
+
                 model:'qwen/qwen3-coder:free',
+
                 messages:[
                     {
                         role:'system',
-                        content:'Return ONLY JSON patches.'
+                        content:
+                        'Return ONLY valid runnable HTML code.'
                     },
                     {
                         role:'user',
-                        content:userRequest
+                        content:prompt
                     }
                 ]
             })
